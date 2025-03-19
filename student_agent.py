@@ -15,7 +15,7 @@ POLICY_LR     = 1e-4
 VALUE_LR      = 1e-4   
 GAMMA         = 0.99   
 HIDDEN_DIM    = 64     
-INPUT_DIM     = 10     
+INPUT_DIM     = 8     
 ACTION_DIM    = 6      
 GRID_MIN      = 5      
 GRID_MAX      = 9      
@@ -24,7 +24,7 @@ def clamp(value, min_val=-5, max_val=5):
     return max(min_val, min(max_val, value))
 
 class PolicyNet(nn.Module):
-    def __init__(self, input_dim=10, hidden_dim=64, output_dim=6):
+    def __init__(self, input_dim=8, hidden_dim=64, output_dim=6):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
@@ -54,7 +54,7 @@ class PolicyNet(nn.Module):
         return action.item(), log_prob
 
 class ValueNet(nn.Module):
-    def __init__(self, input_dim=10, hidden_dim=64):
+    def __init__(self, input_dim=8, hidden_dim=64):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
@@ -109,10 +109,11 @@ def compress_state(obs):
     """
     Features:
     1️⃣ Four obstacle indicators (4)
-    2️⃣ Target direction indicators (4)
+    2️⃣ Relative position of the target (2)
     3️⃣ Can Pick Up (1)
     4️⃣ Can Drop Off (1)
     """
+
     global known_passenger_pos, known_destination_pos, visited_stations
 
     (taxi_r, taxi_c,
@@ -123,9 +124,11 @@ def compress_state(obs):
      obst_n, obst_s, obst_e, obst_w,
      passenger_look, destination_look) = obs
 
+    # 🚀 Dynamically infer the grid size
     stations = [(s0_r, s0_c), (s1_r, s1_c), (s2_r, s2_c), (s3_r, s3_c)]
+    grid_size = max(max(x, y) for x, y in stations) + 1  # Infer grid size dynamically
 
-    # 1️⃣ Update Knowledge (Track Passenger & Destination)
+    # 📝 **Track passenger and destination positions**
     if (taxi_r, taxi_c) in stations:
         visited_stations.add((taxi_r, taxi_c))
         if passenger_look:
@@ -133,7 +136,7 @@ def compress_state(obs):
         if destination_look:
             known_destination_pos = (taxi_r, taxi_c)
 
-    # 2️⃣ Determine Target
+    # 🛠 **Decide Where to Go**
     if len(visited_stations) < 4:
         target_r, target_c = min(stations, key=lambda s: abs(s[0] - taxi_r) + abs(s[1] - taxi_c))
     elif known_passenger_pos is None:
@@ -143,25 +146,21 @@ def compress_state(obs):
     else:
         target_r, target_c = known_passenger_pos
 
-    # 3️⃣ Compute Directional Indicators
-    target_n = 1 if target_r < taxi_r else 0
-    target_s = 1 if target_r > taxi_r else 0
-    target_e = 1 if target_c > taxi_c else 0
-    target_w = 1 if target_c < taxi_c else 0
+    # 🏁 **Relative Position (normalized by grid size)**
+    rel_target_r = (target_r - taxi_r) / grid_size
+    rel_target_c = (target_c - taxi_c) / grid_size
 
-    # 4️⃣ Pick-Up & Drop-Off Indicators
+    # ✅ **Can Pick Up / Drop Off**
     can_pickup = 1 if (taxi_r, taxi_c) == known_passenger_pos else 0
     can_dropoff = 1 if (taxi_r, taxi_c) == known_destination_pos else 0
 
-    # 5️⃣ Final State Representation (10 Features)
+    # 🚀 **Final State (8 Features)**
     feats = [
-        obst_n, obst_s, obst_e, obst_w,
-        target_n, target_s, target_e, target_w,
-        can_pickup, can_dropoff
+        obst_n, obst_s, obst_e, obst_w,  # Obstacles
+        rel_target_r, rel_target_c,  # Target direction
+        can_pickup, can_dropoff  # Pickup & Dropoff status
     ]
-    return torch.tensor(feats, dtype=torch.float32).unsqueeze(0)  # Shape [1,10]
-
-
+    return torch.tensor(feats, dtype=torch.float32).unsqueeze(0)  # Shape [1,8]
 
 
 # ------------------------------------------------------------------------------
@@ -239,14 +238,12 @@ def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_
         success = False  
 
         while not done and step < max_steps:
-            st = compress_state(obs)
+            st = compress_state(obs)  # ✅ Now we infer `grid_size` inside compress_state()
 
             action, log_prob = policy_net.get_action_logprob(st)
 
             # Step in the environment
-            passenger_look = obs[-2]
-            destination_look = obs[-1]
-            next_obs, reward, done, _info = env.step(action, passenger_look, destination_look)
+            next_obs, reward, done, _info = env.step(action)
 
             states.append(st)
             logprobs.append(log_prob)
@@ -300,14 +297,15 @@ def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_
         value_opt.step()
 
         # ✅ Save Model if Avg Reward > 0
-        if avg_reward > 0:
-            save_models()
-            print(f"📌 Model Saved! ✅ Avg Reward: {avg_reward:.2f}")
+        # if avg_reward > 0:
+        #     save_models()
+        #     print(f"📌 Model Saved! ✅ Avg Reward: {avg_reward:.2f}")
 
         # ✅ Print success rate and avg reward every 100 episodes
         if (ep + 1) % 100 == 0:
             success_rate = (successful_episodes / (ep + 1)) * 100
             print(f"✅ Episode {ep+1}/{num_episodes}, Steps: {step}, Reward: {total_reward:.2f}, Avg Reward: {avg_reward:.2f}, Success Rate: {success_rate:.2f}%")
+
 
 
 
