@@ -107,11 +107,10 @@ visited_stations = set()  # 記錄已探索的車站
 
 def compress_state(obs):
     """
-    壓縮 state:
-    - 四周有沒有障礙物 (4 維)
-    - 目標在哪裡 (4 維)
-    - 是否能接客 (1 維)
-    - 是否能放客 (1 維)
+    1️⃣ 四周有沒有障礙物 (4 維)
+    2️⃣ 目標在哪裡 (4 維)
+    3️⃣ 是否能接客 (1 維)
+    4️⃣ 是否能放客 (1 維)
     """
 
     global known_passenger_pos, known_destination_pos, visited_stations
@@ -126,54 +125,42 @@ def compress_state(obs):
 
     stations = [(s0_r, s0_c), (s1_r, s1_c), (s2_r, s2_c), (s3_r, s3_c)]
 
-    # **探索：如果 taxi 到了車站，就標記為已探索**
+    # 📝 **探索四個車站，找到 passenger & destination**
     if (taxi_r, taxi_c) in stations:
         visited_stations.add((taxi_r, taxi_c))
+        if passenger_look:
+            known_passenger_pos = (taxi_r, taxi_c)
+        if destination_look:
+            known_destination_pos = (taxi_r, taxi_c)
 
-    # **找到 passenger 就記住它的位置**
-    if passenger_look and (taxi_r, taxi_c) in stations:
-        known_passenger_pos = (taxi_r, taxi_c)
-
-    # **找到 destination 也記住**
-    if destination_look and (taxi_r, taxi_c) in stations:
-        known_destination_pos = (taxi_r, taxi_c)
-
-    # **決定目標位置**
+    # 🚖 **決定去哪裡**
     if len(visited_stations) < 4:
-        # 🚖 **還沒探索完 4 個車站，繼續探索**
-        unexplored_stations = [s for s in stations if s not in visited_stations]
-        target_r, target_c = unexplored_stations[0]
+        target_r, target_c = min(stations, key=lambda s: abs(s[0] - taxi_r) + abs(s[1] - taxi_c))
     elif known_passenger_pos is None:
-        # 🎯 **找不到 passenger，繼續巡邏**
         target_r, target_c = min(stations, key=lambda s: abs(s[0] - taxi_r) + abs(s[1] - taxi_c))
     elif (taxi_r, taxi_c) == known_passenger_pos:
-        # 🚕 **接到 passenger，前往 destination**
         target_r, target_c = known_destination_pos if known_destination_pos else stations[0]
     else:
-        # 🏁 **知道 passenger 位置但還沒接客，前往 passenger**
         target_r, target_c = known_passenger_pos
 
-    # **目標方向 (4 維)**
+    # 🏁 **目標方向**
     target_n = 1 if target_r < taxi_r else 0
     target_s = 1 if target_r > taxi_r else 0
     target_e = 1 if target_c > taxi_c else 0
     target_w = 1 if target_c < taxi_c else 0
 
-    # **是否可以接客 (1 維)**
+    # ✅ **是否能接/放客**
     can_pickup = 1 if (taxi_r, taxi_c) == known_passenger_pos else 0
-
-    # **是否可以放客 (1 維)**
     can_dropoff = 1 if (taxi_r, taxi_c) == known_destination_pos else 0
 
-    # **最終的 state (10 維)**
+    # 🚀 **最終 state**
     feats = [
-        obst_n, obst_s, obst_e, obst_w,  # 4 維 - 障礙物
-        target_n, target_s, target_e, target_w,  # 4 維 - 目標方向
-        can_pickup, can_dropoff  # 2 維 - 是否可接/放客
+        obst_n, obst_s, obst_e, obst_w,  
+        target_n, target_s, target_e, target_w,  
+        can_pickup, can_dropoff  
     ]
+    return torch.tensor(feats, dtype=torch.float32).unsqueeze(0)  # 保持 [1,10]
 
-    arr = np.array(feats, dtype=np.float32).reshape(1, -1)  # [1,10]
-    return torch.from_numpy(arr)
 
 
 
@@ -183,9 +170,8 @@ def compress_state(obs):
 # ------------------------------------------------------------------------------
 def get_action(obs, epsilon=0.1):
     """
-    - 先探索四個車站，找到 passenger 和 destination
-    - 找到 passenger 位置後，記住它
-    - 成功接客後，前往 destination
+    先探索四個車站，找到 passenger 和 destination
+    再去接 passenger，最後送到 destination
     """
     global known_passenger_pos, visited_stations
 
@@ -196,15 +182,20 @@ def get_action(obs, epsilon=0.1):
         probs  = torch.softmax(logits, dim=1)     
         dist   = torch.distributions.Categorical(probs)
 
-        # **epsilon-greedy 探索**
+        # **Epsilon-greedy**
         if random.random() < epsilon:
-            action = random.randint(0, 5)  # 隨機選擇一個動作
+            action = random.randint(0, 5)  
         else:
-            action = dist.sample()
+            action = dist.sample().item()
 
-    
+    # **如果還沒探索完四個車站，優先移動**
+    if len(visited_stations) < 4:
+        action = random.choice([0, 1, 2, 3])  # 隨機上下左右移動
 
-    return int(action)  # 確保 action 是 int，不使用 .item()
+    print(f"🔍 Taxi State: {state_tensor.numpy().flatten()}")
+    print(f"🚖 Chosen Action: {action}")
+
+    return int(action)
 
 
 
@@ -225,39 +216,29 @@ def discount_rewards(rewards, gamma=0.99):
 # Training with advantage = G_t - V(s_t)
 # We do a single step of gradient for policy and value net each episode
 # ------------------------------------------------------------------------------
-def train_with_advantage(env,
-                         policy_net,
-                         value_net,
-                         policy_opt,
-                         value_opt,
-                         num_episodes=1000,
-                         max_steps=500,
-                         gamma=0.99,
-                         value_loss_coef=0.5):
+def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_episodes=1000, max_steps=500, gamma=0.99, value_loss_coef=0.5):
     """
-    We'll do advantage-based training:
-      advantage = G_t - V(s_t)
-      policy_loss = -log_prob * advantage
-      value_loss = 0.5 * advantage^2
-      total_loss = policy_loss + value_loss
+    - 使用 Advantage = G_t - V(s_t)
+    - 增加穩定性，避免過度學習
     """
     for ep in range(num_episodes):
         obs, _info = env.reset()
 
-        states   = []
+        states = []
         logprobs = []
-        rewards  = []
-        step     = 0
-        done     = False
+        rewards = []
+        step = 0
+        done = False
         total_reward = 0
 
         while not done and step < max_steps:
             st = compress_state(obs)
 
-            # sample action
+            # Sample action
             action, log_prob = policy_net.get_action_logprob(st)
-            # step
-            passenger_look   = obs[-2]
+
+            # Step
+            passenger_look = obs[-2]
             destination_look = obs[-1]
             next_obs, reward, done, _info = env.step(action, passenger_look, destination_look)
 
@@ -269,30 +250,27 @@ def train_with_advantage(env,
             total_reward += reward
             step += 1
 
-        # compute returns
+        # 🚀 **Normalize returns**
         returns = discount_rewards(rewards, gamma)
         returns = np.array(returns, dtype=np.float32)
+        returns = (returns - returns.mean()) / (returns.std() + 1e-8)  # 讓數值穩定
 
-        # advantage-based update
+        # Advantage-based training
         policy_opt.zero_grad()
         value_opt.zero_grad()
 
         policy_loss = []
         value_loss  = []
 
-        # We can do all steps in one go
         for i, (lp, Gt) in enumerate(zip(logprobs, returns)):
-            # state
-            v_s = value_net(states[i])  # shape [1,1]
-            advantage = Gt - v_s.item() # scalar
+            v_s = value_net(states[i])  
+            advantage = Gt - v_s.item()  
 
-            # policy loss
             policy_loss.append(-lp * advantage)
-            # value loss
             value_loss.append(0.5 * advantage**2)
 
         policy_loss = torch.stack(policy_loss).sum()
-        value_loss  = torch.tensor(value_loss).sum()  # each is scalar
+        value_loss  = torch.tensor(value_loss).sum()  
         total_loss  = policy_loss + value_loss_coef * value_loss
 
         total_loss.backward()
@@ -300,7 +278,7 @@ def train_with_advantage(env,
         value_opt.step()
 
         if (ep+1) % 100 == 0:
-            print(f"Episode {ep+1}/{num_episodes}, steps={step}, total_reward={total_reward:.2f}")
+            print(f"✅ Episode {ep+1}/{num_episodes}, Steps: {step}, Reward: {total_reward:.2f}")
 
 # ------------------------------------------------------------------------------
 # If run directly: do advantage training, save models
