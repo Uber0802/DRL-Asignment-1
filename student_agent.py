@@ -204,7 +204,8 @@ def get_action(obs, epsilon=0.1):
 
     
 
-    return action.item()
+    return int(action)  # 確保 action 是 int，不使用 .item()
+
 
 
 
