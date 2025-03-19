@@ -107,12 +107,12 @@ visited_stations = set()  # 記錄已探索的車站
 
 def compress_state(obs):
     """
-    1️⃣ 四周有沒有障礙物 (4 維)
-    2️⃣ 目標在哪裡 (4 維)
-    3️⃣ 是否能接客 (1 維)
-    4️⃣ 是否能放客 (1 維)
+    Features:
+    1️⃣ Four obstacle indicators (4)
+    2️⃣ Target direction indicators (4)
+    3️⃣ Can Pick Up (1)
+    4️⃣ Can Drop Off (1)
     """
-
     global known_passenger_pos, known_destination_pos, visited_stations
 
     (taxi_r, taxi_c,
@@ -125,7 +125,7 @@ def compress_state(obs):
 
     stations = [(s0_r, s0_c), (s1_r, s1_c), (s2_r, s2_c), (s3_r, s3_c)]
 
-    # 📝 **探索四個車站，找到 passenger & destination**
+    # 1️⃣ Update Knowledge (Track Passenger & Destination)
     if (taxi_r, taxi_c) in stations:
         visited_stations.add((taxi_r, taxi_c))
         if passenger_look:
@@ -133,7 +133,7 @@ def compress_state(obs):
         if destination_look:
             known_destination_pos = (taxi_r, taxi_c)
 
-    # 🚖 **決定去哪裡**
+    # 2️⃣ Determine Target
     if len(visited_stations) < 4:
         target_r, target_c = min(stations, key=lambda s: abs(s[0] - taxi_r) + abs(s[1] - taxi_c))
     elif known_passenger_pos is None:
@@ -143,24 +143,23 @@ def compress_state(obs):
     else:
         target_r, target_c = known_passenger_pos
 
-    # 🏁 **目標方向**
+    # 3️⃣ Compute Directional Indicators
     target_n = 1 if target_r < taxi_r else 0
     target_s = 1 if target_r > taxi_r else 0
     target_e = 1 if target_c > taxi_c else 0
     target_w = 1 if target_c < taxi_c else 0
 
-    # ✅ **是否能接/放客**
+    # 4️⃣ Pick-Up & Drop-Off Indicators
     can_pickup = 1 if (taxi_r, taxi_c) == known_passenger_pos else 0
     can_dropoff = 1 if (taxi_r, taxi_c) == known_destination_pos else 0
 
-    # 🚀 **最終 state**
+    # 5️⃣ Final State Representation (10 Features)
     feats = [
-        obst_n, obst_s, obst_e, obst_w,  
-        target_n, target_s, target_e, target_w,  
-        can_pickup, can_dropoff  
+        obst_n, obst_s, obst_e, obst_w,
+        target_n, target_s, target_e, target_w,
+        can_pickup, can_dropoff
     ]
-    return torch.tensor(feats, dtype=torch.float32).unsqueeze(0)  # 保持 [1,10]
-
+    return torch.tensor(feats, dtype=torch.float32).unsqueeze(0)  # Shape [1,10]
 
 
 
@@ -168,34 +167,36 @@ def compress_state(obs):
 # ------------------------------------------------------------------------------
 # The environment calls get_action(obs) to pick an action at test time
 # ------------------------------------------------------------------------------
-def get_action(obs, epsilon=0.1):
+def get_action(obs, epsilon=0.2):  # Increase epsilon for more exploration
     """
-    先探索四個車站，找到 passenger 和 destination
-    再去接 passenger，最後送到 destination
+    1️⃣ First explore all four stations.
+    2️⃣ Move toward passenger, then toward destination.
+    3️⃣ Use policy net to make smart decisions.
     """
     global known_passenger_pos, visited_stations
 
     state_tensor = compress_state(obs)
 
     with torch.no_grad():
-        logits = policy_net(state_tensor)        
-        probs  = torch.softmax(logits, dim=1)     
+        logits = policy_net(state_tensor)
+        probs  = torch.softmax(logits, dim=1)
         dist   = torch.distributions.Categorical(probs)
 
-        # **Epsilon-greedy**
+        # Epsilon-Greedy Exploration
         if random.random() < epsilon:
             action = random.randint(0, 5)  
         else:
             action = dist.sample().item()
 
-    # **如果還沒探索完四個車站，優先移動**
+    # 🚖 Ensure Early Exploration
     if len(visited_stations) < 4:
-        action = random.choice([0, 1, 2, 3])  # 隨機上下左右移動
+        action = random.choice([0, 1, 2, 3])
 
     print(f"🔍 Taxi State: {state_tensor.numpy().flatten()}")
     print(f"🚖 Chosen Action: {action}")
 
     return int(action)
+
 
 
 
@@ -216,11 +217,16 @@ def discount_rewards(rewards, gamma=0.99):
 # Training with advantage = G_t - V(s_t)
 # We do a single step of gradient for policy and value net each episode
 # ------------------------------------------------------------------------------
-def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_episodes=1000, max_steps=500, gamma=0.99, value_loss_coef=0.5):
+def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_episodes=5000, max_steps=500, gamma=0.99, value_loss_coef=0.5):
     """
-    - 使用 Advantage = G_t - V(s_t)
-    - 增加穩定性，避免過度學習
+    1️⃣ Uses Advantage = G_t - V(s_t)
+    2️⃣ Normalizes rewards for stability
+    3️⃣ Tracks success rate
+    4️⃣ Saves model when average reward > 0
     """
+    successful_episodes = 0  # Track successful drop-offs
+    reward_history = []  # Store last 100 rewards for averaging
+
     for ep in range(num_episodes):
         obs, _info = env.reset()
 
@@ -230,14 +236,14 @@ def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_
         step = 0
         done = False
         total_reward = 0
+        success = False  
 
         while not done and step < max_steps:
             st = compress_state(obs)
 
-            # Sample action
             action, log_prob = policy_net.get_action_logprob(st)
 
-            # Step
+            # Step in the environment
             passenger_look = obs[-2]
             destination_look = obs[-1]
             next_obs, reward, done, _info = env.step(action, passenger_look, destination_look)
@@ -250,35 +256,60 @@ def train_with_advantage(env, policy_net, value_net, policy_opt, value_opt, num_
             total_reward += reward
             step += 1
 
-        # 🚀 **Normalize returns**
-        returns = discount_rewards(rewards, gamma)
-        returns = np.array(returns, dtype=np.float32)
-        returns = (returns - returns.mean()) / (returns.std() + 1e-8)  # 讓數值穩定
+            # ✅ Check for successful episode (passenger dropped at destination)
+            if done and reward >= 50:
+                success = True
 
-        # Advantage-based training
+        # ✅ Update success count
+        if success:
+            successful_episodes += 1
+
+        # ✅ Store reward history for averaging
+        reward_history.append(total_reward)
+        if len(reward_history) > 100:
+            reward_history.pop(0)  # Keep only last 100 rewards
+
+        # 🚀 Compute Average Reward
+        avg_reward = np.mean(reward_history) if len(reward_history) > 0 else -100
+
+        # 🚀 Normalize & Clip Rewards
+        returns = discount_rewards(rewards, gamma)
+        returns = torch.tensor(returns, dtype=torch.float32)
+
         policy_opt.zero_grad()
         value_opt.zero_grad()
 
         policy_loss = []
-        value_loss  = []
+        value_loss = []
 
         for i, (lp, Gt) in enumerate(zip(logprobs, returns)):
-            v_s = value_net(states[i])  
-            advantage = Gt - v_s.item()  
+            v_s = value_net(states[i])
+            advantage = Gt - v_s.item()
 
             policy_loss.append(-lp * advantage)
             value_loss.append(0.5 * advantage**2)
 
+        # ✅ Convert to Tensors that Track Gradients
         policy_loss = torch.stack(policy_loss).sum()
-        value_loss  = torch.tensor(value_loss).sum()  
-        total_loss  = policy_loss + value_loss_coef * value_loss
+        value_loss = torch.stack(value_loss).sum()  
 
+        total_loss = policy_loss + value_loss_coef * value_loss
         total_loss.backward()
+
         policy_opt.step()
         value_opt.step()
 
-        if (ep+1) % 100 == 0:
-            print(f"✅ Episode {ep+1}/{num_episodes}, Steps: {step}, Reward: {total_reward:.2f}")
+        # ✅ Save Model if Avg Reward > 0
+        if avg_reward > 0:
+            save_models()
+            print(f"📌 Model Saved! ✅ Avg Reward: {avg_reward:.2f}")
+
+        # ✅ Print success rate and avg reward every 100 episodes
+        if (ep + 1) % 100 == 0:
+            success_rate = (successful_episodes / (ep + 1)) * 100
+            print(f"✅ Episode {ep+1}/{num_episodes}, Steps: {step}, Reward: {total_reward:.2f}, Avg Reward: {avg_reward:.2f}, Success Rate: {success_rate:.2f}%")
+
+
 
 # ------------------------------------------------------------------------------
 # If run directly: do advantage training, save models
@@ -304,12 +335,12 @@ if __name__ == "__main__":
     policy_optimizer = optim.Adam(policy_net.parameters(), lr=POLICY_LR)
     value_optimizer  = optim.Adam(value_net.parameters(),  lr=VALUE_LR)
 
-    num_episodes = 2000
+    num_episodes = 5000
     train_with_advantage(base_env,
                          policy_net, value_net,
                          policy_optimizer, value_optimizer,
                          num_episodes=num_episodes,
-                         max_steps=500,
+                         max_steps=1000,
                          gamma=GAMMA,
                          value_loss_coef=0.5)
 
