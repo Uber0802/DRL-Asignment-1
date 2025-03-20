@@ -118,13 +118,15 @@ def get_action_and_logprob(obs):
 #         dist, _logits = policy_net.get_dist_and_logits(state_tensor)
 #         action = dist.sample()
 #     return action.item()
-
+global passenger_in_taxi, known_passenger_pos, visited_stations, known_destination_pos
+passenger_in_taxi = False
+known_passenger_pos, visited_stations, known_destination_pos  = None, None, None
 def get_action(obs):
     """
     Selects an action based on the current state and updates global variables accordingly.
     This function is used during evaluation.
     """
-    global passenger_in_taxi, known_passenger_pos, visited_stations, known_destination_pos
+    
 
     last_taxi_r, last_taxi_c, *_ = obs  
     if passenger_in_taxi:
