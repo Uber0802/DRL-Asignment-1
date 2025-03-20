@@ -7,7 +7,7 @@ import torch.optim as optim
 
 POLICY_FILENAME = "my_policy_net.pth"
 
-POLICY_LR     = 1e-5  # Increased learning rate
+POLICY_LR     = 1e-3  # Increased learning rate
 GAMMA         = 0.99
 HIDDEN_DIM    = 32  # Increased hidden size for better learning
 INPUT_DIM     = 8
@@ -112,7 +112,12 @@ def get_action_and_logprob(obs):
     log_prob = dist.log_prob(action)
     return action.item(), log_prob
 
-
+# def get_action(obs):
+#     state_tensor = compress_state(obs)
+#     with torch.no_grad():  
+#         dist, _logits = policy_net.get_dist_and_logits(state_tensor)
+#         action = dist.sample()
+#     return action.item()
 global passenger_in_taxi, known_passenger_pos, visited_stations, known_destination_pos
 passenger_in_taxi = False
 known_passenger_pos, known_destination_pos  = None, None
@@ -147,7 +152,7 @@ def get_action(obs):
     return action
 
 
-def train_policy_only(env, policy_net, policy_opt, num_episodes=5000, max_steps=500, gamma=0.99):
+def train_policy_only(env, policy_net, policy_opt, grid, num_episodes=5000, max_steps=500, gamma=0.99):
     global passenger_in_taxi, known_passenger_pos, known_destination_pos, visited_stations  
 
     reward_history = []
@@ -157,7 +162,7 @@ def train_policy_only(env, policy_net, policy_opt, num_episodes=5000, max_steps=
 
     for ep in range(num_episodes):
         import random
-        num = random.randint(5, 9) 
+        num = random.randint(5, grid) 
 
         env = SimpleTaxiEnv(grid_size=num, fuel_limit=5000)
         obs, _info = env.reset()
@@ -218,7 +223,8 @@ def train_policy_only(env, policy_net, policy_opt, num_episodes=5000, max_steps=
 
 if __name__ == "__main__":
     from simple_custom_taxi_env import SimpleTaxiEnv
-    env = SimpleTaxiEnv(grid_size=5, fuel_limit=10000)
+    env = SimpleTaxiEnv(grid_size=5, fuel_limit=5000)
     policy_optimizer = optim.Adam(policy_net.parameters(), lr=POLICY_LR)
-    train_policy_only(env, policy_net, policy_optimizer)
+    train_policy_only(env, policy_net, policy_optimizer, grid = 5)
+    train_policy_only(env, policy_net, policy_optimizer, grid = 10)
     save_models()
