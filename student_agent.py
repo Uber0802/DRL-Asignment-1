@@ -7,7 +7,7 @@ import torch.optim as optim
 
 POLICY_FILENAME = "my_policy_net.pth"
 
-POLICY_LR     = 1e-3  # Increased learning rate
+POLICY_LR     = 1e-5  # Increased learning rate
 GAMMA         = 0.99
 HIDDEN_DIM    = 32  # Increased hidden size for better learning
 INPUT_DIM     = 8
@@ -115,7 +115,8 @@ def get_action_and_logprob(obs):
 
 global passenger_in_taxi, known_passenger_pos, visited_stations, known_destination_pos
 passenger_in_taxi = False
-known_passenger_pos, visited_stations, known_destination_pos  = None, None, None
+known_passenger_pos, known_destination_pos  = None, None
+visited_stations = set()
 
 def get_action(obs):
     """
