@@ -157,7 +157,7 @@ def train_policy_only(env, policy_net, policy_opt, num_episodes=5000, max_steps=
 
     for ep in range(num_episodes):
         import random
-        num = random.randint(5, 8) 
+        num = random.randint(5, 9) 
 
         env = SimpleTaxiEnv(grid_size=num, fuel_limit=5000)
         obs, _info = env.reset()
@@ -218,7 +218,7 @@ def train_policy_only(env, policy_net, policy_opt, num_episodes=5000, max_steps=
 
 if __name__ == "__main__":
     from simple_custom_taxi_env import SimpleTaxiEnv
-    env = SimpleTaxiEnv(grid_size=5, fuel_limit=8000)
+    env = SimpleTaxiEnv(grid_size=5, fuel_limit=10000)
     policy_optimizer = optim.Adam(policy_net.parameters(), lr=POLICY_LR)
     train_policy_only(env, policy_net, policy_optimizer)
-    save_models()
+    save_models()#
